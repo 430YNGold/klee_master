@@ -54,6 +54,7 @@ public:
   bool fake_object;
   bool isUserSpecified;
 
+  // XXX don't understand
   MemoryManager *parent;
 
   /// "Location" for which this memory object was allocated. This
@@ -111,6 +112,7 @@ public:
     this->name = name;
   }
 
+  //可以理解为针对内存的一些操作
   ref<ConstantExpr> getBaseExpr() const { 
     return ConstantExpr::create(address, Context::get().getPointerWidth());
   }
@@ -156,6 +158,7 @@ private:
 
   const MemoryObject *object;
 
+  //存储运行时的实际值
   uint8_t *concreteStore;
   // XXX cleanup name of flushMask (its backwards or something)
   BitArray *concreteMask;

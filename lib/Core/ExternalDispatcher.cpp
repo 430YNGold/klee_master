@@ -159,7 +159,7 @@ bool ExternalDispatcher::executeCall(Function *f, Instruction *i, uint64_t *args
 static uint64_t *gTheArgsP;
 
 bool ExternalDispatcher::runProtectedCall(Function *f, uint64_t *args) {
-  struct sigaction segvAction, segvActionOld;
+	struct sigaction segvAction, segvActionOld;
   bool res;
   
   if (!f)

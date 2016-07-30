@@ -93,6 +93,7 @@ bool TimingSolver::mayBeFalse(const ExecutionState& state, ref<Expr> expr,
   return true;
 }
 
+// 一般 将 符号值 转化 为 具体值 或 某个范围。
 bool TimingSolver::getValue(const ExecutionState& state, ref<Expr> expr, 
                             ref<ConstantExpr> &result) {
   // Fast path, to avoid timer and OS overhead.

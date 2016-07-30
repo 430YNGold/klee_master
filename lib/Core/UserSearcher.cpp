@@ -93,7 +93,7 @@ Searcher *getNewSearcher(Searcher::CoreSearchType type, Executor &executor) {
 
 Searcher *klee::constructUserSearcher(Executor &executor) {
 
-  // default values
+  // default values 默认的搜索策略
   if (CoreSearch.size() == 0) {
     CoreSearch.push_back(Searcher::RandomPath);
     CoreSearch.push_back(Searcher::NURS_CovNew);

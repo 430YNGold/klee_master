@@ -727,6 +727,7 @@ void Executor::branch(ExecutionState &state,
       addConstraint(*result[i], conditions[i]);
 }
 
+// 所有 isSeeding 暂时忽略，如果有时间 可以看 run 中的 useSeed
 Executor::StatePair 
 Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
   Solver::Validity res;
@@ -734,12 +735,19 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
     seedMap.find(&current);
   bool isSeeding = it != seedMap.end();
 
+  fprintf(stderr, "Test: isSeeding is %d\n", isSeeding);
+  //这 判断条件 好多。 theStatisticManager 全局变量， PCT 应该为该限制条件所占的百分比
+  // CPFork callpathNodeFork
   if (!isSeeding && !isa<ConstantExpr>(condition) && 
       (MaxStaticForkPct!=1. || MaxStaticSolvePct != 1. ||
        MaxStaticCPForkPct!=1. || MaxStaticCPSolvePct != 1.) &&
       statsTracker->elapsed() > 60.) {
     StatisticManager &sm = *theStatisticManager;
     CallPathNode *cpn = current.stack.back().callPathNode;
+
+    //超过限制条件， 不会再进行 fork 中的 其他操作，如生成 新的 state
+    //直接 对当前的 state 的 condition 进行约束的求解， 并将 condition得到的结果 添加到当前的约束上。
+    //statistic 有不同的版本？
     if ((MaxStaticForkPct<1. &&
          sm.getIndexedValue(stats::forks, sm.getIndex()) > 
          stats::forks*MaxStaticForkPct) ||
@@ -756,6 +764,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       bool success = solver->getValue(current, condition, value);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
+
       addConstraint(current, EqExpr::create(value, condition));
       condition = value;
     }
@@ -765,6 +774,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
   if (isSeeding)
     timeout *= it->second.size();
   solver->setTimeout(timeout);
+
+  //res 为 在当前 constrain 下选择的 condition 结果
   bool success = solver->evaluate(current, condition, res);
   solver->setTimeout(0);
   if (!success) {
@@ -773,6 +784,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
     return StatePair(0, 0);
   }
 
+  //replay mode and original mode
   if (!isSeeding) {
     if (replayPath && !isInternal) {
       assert(replayPosition<replayPath->size() &&
@@ -793,7 +805,17 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
           addConstraint(current, Expr::createIsZero(condition));
         }
       }
-    } else if (res==Solver::Unknown) {
+    }
+
+    //如果在得到 unknown 遇到一下条件 不能 fork 时
+    /**
+     * (MaxMemoryInhibit && atMemoryLimit) ||
+          current.forkDisabled ||
+          inhibitForking ||
+          (MaxForks!=~0u && stats::forks >= MaxForks)
+     */
+    //将 condition 加到 constraint。利用 theRNG (随机？？)得到 res 的值
+    else if (res==Solver::Unknown) {
       assert(!replayKTest && "in replay mode, only one branch can be true.");
       
       if ((MaxMemoryInhibit && atMemoryLimit) || 
@@ -876,18 +898,23 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
     }
 
     return StatePair(0, &current);
-  } else {
+  }
+
+  //当 res 为 unknown 得到 两个 state， 产生 分支
+  else {
     TimerStatIncrementer timer(stats::forkTime);
     ExecutionState *falseState, *trueState = &current;
 
     ++stats::forks;
 
+    //真正的 复制 阶段， trueState 为 currentState
     falseState = trueState->branch();
     addedStates.push_back(falseState);
 
     if (RandomizeFork && theRNG.getBool())
       std::swap(trueState, falseState);
 
+    // 和 seed 有关的 暂时不关注。
     if (it != seedMap.end()) {
       std::vector<SeedInfo> seeds = it->second;
       it->second.clear();
@@ -922,6 +949,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       }
     }
 
+    //process Tree, 将 生成的 state 构建成 树， 原先的 currentState 已经 转变为 trueState
     current.ptreeNode->data = 0;
     std::pair<PTree::Node*, PTree::Node*> res =
       processTree->split(current.ptreeNode, falseState, trueState);
@@ -1050,6 +1078,7 @@ ref<klee::ConstantExpr> Executor::evalConstant(const Constant *c) {
   }
 }
 
+//获得 llvm inst 上的 参数 的 值
 const Cell& Executor::eval(KInstruction *ki, unsigned index, 
                            ExecutionState &state) const {
   assert(index < ki->inst->getNumOperands());
@@ -1226,6 +1255,8 @@ void Executor::executeCall(ExecutionState &state,
   Instruction *i = ki->inst;
   if (f && f->isDeclaration()) {
     switch(f->getIntrinsicID()) {
+
+    // 如果不是内部函数
     case Intrinsic::not_intrinsic:
       // state may be destroyed by this call, cannot touch
       callExternalFunction(state, ki, f, arguments);
@@ -1233,6 +1264,7 @@ void Executor::executeCall(ExecutionState &state,
         
       // va_arg is handled by caller and intrinsic lowering, see comment for
       // ExecutionState::varargs
+      // 读取可变参数的内部函数
     case Intrinsic::vastart:  {
       StackFrame &sf = state.stack.back();
 
@@ -1304,6 +1336,8 @@ void Executor::executeCall(ExecutionState &state,
 
     unsigned callingArgs = arguments.size();
     unsigned funcArgs = f->arg_size();
+
+    //
     if (!f->isVarArg()) {
       if (callingArgs > funcArgs) {
         klee_warning_once(f, "calling %s with extra arguments.", 
@@ -1313,7 +1347,10 @@ void Executor::executeCall(ExecutionState &state,
                               "user.err");
         return;
       }
-    } else {
+    }
+
+    //因为 varArg 参数 分配在堆上
+    else {
       Expr::Width WordSize = Context::get().getPointerWidth();
 
       if (callingArgs < funcArgs) {
@@ -1424,7 +1461,11 @@ void Executor::printFileLine(ExecutionState &state, KInstruction *ki,
 
 /// Compute the true target of a function call, resolving LLVM and KLEE aliases
 /// and bitcasts.
+
+//包括 多种 情况（程序中自己定义的函数， klee 定义的函数， 内联函数等）
 Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
+
+  // rounds up/down 上/下舍入
   SmallPtrSet<const GlobalValue*, 3> Visited;
 
   Constant *c = dyn_cast<Constant>(calledVal);
@@ -1493,6 +1534,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     bool isVoidReturn = (ri->getNumOperands() == 0);
     ref<Expr> result = ConstantExpr::alloc(0, Expr::Bool);
     
+    // eval 获得 函数的返回值
     if (!isVoidReturn) {
       result = eval(ki, 0, state).value;
     }
@@ -1501,11 +1543,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       assert(!caller && "caller set on initial stack frame");
       terminateStateOnExit(state);
     } else {
+      //结束调用 弹出 相应的 stackFrame
       state.popFrame();
 
       if (statsTracker)
         statsTracker->framePopped(state);
 
+      //invokeInst 与 thrown exception longjmp 有关，  异常处理本质上是另一种返回机制
+      //和 清理 stack（出现异常时栈回退有关） 的 label 有一定关系
       if (InvokeInst *ii = dyn_cast<InvokeInst>(caller)) {
         transferToBasicBlock(ii->getNormalDest(), caller->getParent(), state);
       } else {
@@ -1519,7 +1564,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
           // may need to do coercion due to bitcasts
           Expr::Width from = result->getWidth();
           Expr::Width to = getWidthForLLVMType(t);
-            
+
+          //如果出现 caller 中的 类型 与 callee 中 不符合
           if (from != to) {
             CallSite cs = (isa<InvokeInst>(caller) ? CallSite(cast<InvokeInst>(caller)) : 
                            CallSite(cast<CallInst>(caller)));
@@ -1539,6 +1585,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
             }
           }
 
+          //将 返回值 绑定到 调用者
           bindLocal(kcaller, state, result);
         }
       } else {
@@ -1577,12 +1624,16 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 #endif
   case Instruction::Br: {
     BranchInst *bi = cast<BranchInst>(i);
+
+    //判断 如果 br 为非条件型 直接跳转到下一个 block
     if (bi->isUnconditional()) {
       transferToBasicBlock(bi->getSuccessor(0), bi->getParent(), state);
     } else {
       // FIXME: Find a way that we don't have this hidden dependency.
       assert(bi->getCondition() == bi->getOperand(0) &&
              "Wrong operand index!");
+
+      //获取 跳转条件 根据其条件得到 路径。 fork 中包含有 路径的选择
       ref<Expr> cond = eval(ki, 0, state).value;
       Executor::StatePair branches = fork(state, cond, false);
 
@@ -1593,6 +1644,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       if (statsTracker && state.stack.back().kf->trackCoverage)
         statsTracker->markBranchVisited(branches.first, branches.second);
 
+      //生成的两个 state 跳转到相应的 block
       if (branches.first)
         transferToBasicBlock(bi->getSuccessor(0), bi->getParent(), *branches.first);
       if (branches.second)
@@ -1600,6 +1652,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     }
     break;
   }
+
+  //因为 宏 的关系，会导致 IDE 中的 括号 不匹配。
+  //switch 暂时不看
   case Instruction::Switch: {
     SwitchInst *si = cast<SwitchInst>(i);
     ref<Expr> cond = eval(ki, 0, state).value;
@@ -1757,6 +1812,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     for (unsigned j=0; j<numArgs; ++j)
       arguments.push_back(eval(ki, j+1, state).value);
 
+    //有 targetFunction
     if (f) {
       const FunctionType *fType = 
         dyn_cast<FunctionType>(cast<PointerType>(f->getType())->getElementType());
@@ -1801,7 +1857,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       }
 
       executeCall(state, ki, f, arguments);
-    } else {
+    }
+
+    //无 targetFunction 。主要指 函数指针 的情况
+    else {
       ref<Expr> v = eval(ki, 0, state).value;
 
       ExecutionState *free = &state;
@@ -1815,6 +1874,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         bool success = solver->getValue(*free, v, value);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
+
+        //isInternal
         StatePair res = fork(*free, EqExpr::create(v, value), true);
         if (res.first) {
           uint64_t addr = value->getZExtValue();
@@ -2082,6 +2143,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     executeMemoryOperation(state, false, base, 0, ki);
     break;
   }
+
+  //base 为 存储地址
   case Instruction::Store: {
     ref<Expr> base = eval(ki, 1, state).value;
     ref<Expr> value = eval(ki, 0, state).value;
@@ -2089,6 +2152,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     break;
   }
 
+  //getElementPtr 只提供地址的计算，并不接触 memory
   case Instruction::GetElementPtr: {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
     ref<Expr> base = eval(ki, 0, state).value;
@@ -2665,6 +2729,7 @@ void Executor::run(ExecutionState &initialState) {
 
   states.insert(&initialState);
 
+  //与 kTest 有关，
   if (usingSeeds) {
     std::vector<SeedInfo> &v = seedMap[&initialState];
     
@@ -2734,11 +2799,15 @@ void Executor::run(ExecutionState &initialState) {
     }
   }
 
+  //构造相应的 searcher 策略，默认 randomPanthSearcher （唯一需要 *this， 因为需要 processTree）
+  //和 WeightedRandomSearcher::CoveringNew
   searcher = constructUserSearcher(*this);
 
+  //初始化 searcher 向 Searcher 中导入 addStates
   std::vector<ExecutionState *> newStates(states.begin(), states.end());
   searcher->update(0, newStates, std::vector<ExecutionState *>());
 
+  //运行 states 中的 state
   while (!states.empty() && !haltExecution) {
     ExecutionState &state = searcher->selectState();
     KInstruction *ki = state.pc;
@@ -2949,6 +3018,7 @@ void Executor::callExternalFunction(ExecutionState &state,
   if (specialFunctionHandler->handle(state, function, target, arguments))
     return;
   
+  // NoExternal 不允许 除 okExternalsList 以外的外部函数
   if (NoExternals && !okExternals.count(function->getName())) {
     llvm::errs() << "KLEE:ERROR: Calling not-OK external function : "
                  << function->getName().str() << "\n";
@@ -2962,6 +3032,9 @@ void Executor::callExternalFunction(ExecutionState &state,
   // size we need, but this is faster, and the memory usage isn't significant.
   uint64_t *args = (uint64_t*) alloca(2*sizeof(*args) * (arguments.size() + 1));
   memset(args, 0, 2 * sizeof(*args) * (arguments.size() + 1));
+
+  //wordIndex 为2 目的 是空出 128bit 为 return 类型
+  // 得到 参数值 一般为 constant
   unsigned wordIndex = 2;
   for (std::vector<ref<Expr> >::iterator ai = arguments.begin(), 
        ae = arguments.end(); ai!=ae; ++ai) {
@@ -3459,12 +3532,20 @@ void Executor::runFunctionAsMain(Function *f,
 				 int argc,
 				 char **argv,
 				 char **envp) {
+  //Expr 和 Kquery 中的 expression 有关
+  /*
+   * The KQuery language is the textual representation of constraint expressions
+   *  and queries which is used as input to the Kleaver constraint solver.
+   *
+   *  Expressions are frequently shared among constraints and query expressions.
+   */
   std::vector<ref<Expr> > arguments;
 
   // force deterministic initialization of memory objects
   srand(1);
   srandom(1);
   
+  //与 objectstate 有很大关系，与 state 关系不大
   MemoryObject *argvMO = 0;
 
   // In order to make uclibc happy and be closer to what the system is
@@ -3473,24 +3554,39 @@ void Executor::runFunctionAsMain(Function *f,
   // null that uclibc seems to expect, possibly the ELF header?
 
   int envc;
+
+  //因为 envp 是以 NULL 结尾的，得到envp的数目
   for (envc=0; envp[envc]; ++envc) ;
 
   unsigned NumPtrBytes = Context::get().getPointerWidth() / 8;
+
   KFunction *kf = kmodule->functionMap[f];
   assert(kf);
+
+  //LLVM 中的 function 获取参数列表
+  //allocate memory for function arguments (默认用的是malloc) 使 arguments 中的值指向分配的memory
   Function::arg_iterator ai = f->arg_begin(), ae = f->arg_end();
   if (ai!=ae) {
     arguments.push_back(ConstantExpr::alloc(argc, Expr::Int32));
 
+    //argv
+    //envc可能为0
     if (++ai!=ae) {
       argvMO = memory->allocate((argc+1+envc+1+1) * NumPtrBytes, false, true,
                                 f->begin()->begin());
+
+      /*
+       * Test yinwenhao
+       */
+      fprintf(stderr, "runFunctionAsmain in 3504 the f-> begin -> begin is ");
+      f->begin()->begin()->dump();
 
       if (!argvMO)
         klee_error("Could not allocate memory for function arguments");
 
       arguments.push_back(argvMO->getBaseExpr());
 
+      //envp
       if (++ai!=ae) {
         uint64_t envp_start = argvMO->address + (argc+1)*NumPtrBytes;
         arguments.push_back(Expr::createPointer(envp_start));
@@ -3501,35 +3597,45 @@ void Executor::runFunctionAsMain(Function *f,
     }
   }
 
+  //由kfunction 创建 ExecutionState
   ExecutionState *state = new ExecutionState(kmodule->functionMap[f]);
   
+  //记录路径 concrete symbolic
   if (pathWriter) 
     state->pathOS = pathWriter->open();
   if (symPathWriter) 
     state->symPathOS = symPathWriter->open();
 
-
+  //状态跟踪 与代码覆盖率等有一定关系，为以后的状态搜索策略提供参考。对路径和时间进行记录
   if (statsTracker)
     statsTracker->framePushed(*state, 0);
 
   assert(arguments.size() == f->arg_size() && "wrong number of arguments");
+
+  //将获取到的 argument 绑定到 stackFrame 上
   for (unsigned i = 0, e = f->arg_size(); i != e; ++i)
     bindArgument(kf, i, *state, arguments[i]);
 
+  //与 objectState 绑定 MemoryObject 和对应的 state
   if (argvMO) {
     ObjectState *argvOS = bindObjectInState(*state, argvMO, false);
 
     for (int i=0; i<argc+1+envc+1+1; i++) {
       if (i==argc || i>=argc+1+envc) {
-        // Write NULL pointer
+        // Write NULL pointer 在某个具体的位置
         argvOS->write(i * NumPtrBytes, Expr::createPointer(0));
       } else {
         char *s = i<argc ? argv[i] : envp[i-(argc+1)];
         int j, len = strlen(s);
         
+        //为具体的 argv envp 分配 memory ，指定当前指令为 allcosite
         MemoryObject *arg = memory->allocate(len+1, false, true, state->pc->inst);
+        fprintf(stderr, "runFunctionAsMain in 3557 the state-> pc -> inst is ");
+        state->pc->inst->dump();
         if (!arg)
           klee_error("Could not allocate memory for function arguments");
+
+        //绑定 os 中加入真实值 用数组存储
         ObjectState *os = bindObjectInState(*state, arg, false);
         for (j=0; j<len+1; j++)
           os->write8(j, s[j]);
@@ -3542,7 +3648,10 @@ void Executor::runFunctionAsMain(Function *f,
   
   initializeGlobals(*state);
 
+  //运行时构造的树
   processTree = new PTree(state);
+
+  //将。。。
   state->ptreeNode = processTree->root;
   run(*state);
   delete processTree;

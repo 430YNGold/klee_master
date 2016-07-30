@@ -126,6 +126,7 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     symbolics[i].first->refCount++;
 }
 
+//新的 state 的 cover 重新计算， weight 减少
 ExecutionState *ExecutionState::branch() {
   depth++;
 

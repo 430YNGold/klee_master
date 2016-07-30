@@ -51,6 +51,7 @@ ObjectState *AddressSpace::getWriteable(const MemoryObject *mo,
 
 /// 
 
+// 根据 address 地址 找到 mo ob
 bool AddressSpace::resolveOne(const ref<ConstantExpr> &addr, 
                               ObjectPair &result) {
   uint64_t address = addr->getZExtValue();

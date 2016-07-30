@@ -242,7 +242,7 @@ private:
                     ExactResolutionList &results,
                     const std::string &name);
 
-  /// Allocate and bind a new object in a particular state. NOTE: This
+  /// Allocate and bind a new object in a particular state. NbranchedOTE: This
   /// function may fork.
   ///
   /// \param isLocal Flag to indicate if the object should be
@@ -321,6 +321,7 @@ private:
     return state.stack.back().locals[kf->getArgRegister(index)];
   }
 
+  //获得相应 inst 的 寄存器值
   Cell& getDestCell(ExecutionState &state,
                     KInstruction *target) {
     return state.stack.back().locals[target->dest];

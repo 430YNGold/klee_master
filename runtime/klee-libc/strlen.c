@@ -9,6 +9,7 @@
 
 #include <string.h>
 
+// 这方法可以的
 size_t strlen(const char *str) {
   const char *s = str;
   while (*s)

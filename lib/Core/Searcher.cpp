@@ -610,6 +610,8 @@ void IterativeDeepeningTimeSearcher::update(
 
 /***/
 
+//通过 index 来控制两种搜索策略
+
 InterleavedSearcher::InterleavedSearcher(const std::vector<Searcher*> &_searchers)
   : searchers(_searchers),
     index(1) {
@@ -621,11 +623,13 @@ InterleavedSearcher::~InterleavedSearcher() {
     delete *it;
 }
 
+//循环使用搜索策略
 ExecutionState &InterleavedSearcher::selectState() {
   Searcher *s = searchers[--index];
   if (index==0) index = searchers.size();
   return s->selectState();
 }
+
 
 void InterleavedSearcher::update(
     ExecutionState *current, const std::vector<ExecutionState *> &addedStates,

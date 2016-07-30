@@ -38,6 +38,8 @@ namespace klee {
     friend class CallPathManager;
 
   public:
+
+    //会有 多个 children
     typedef std::map<std::pair<llvm::Instruction*, 
                                llvm::Function*>, CallPathNode*> children_ty;
 

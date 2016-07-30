@@ -1155,6 +1155,7 @@ static llvm::Module *linkWithUclibc(llvm::Module *mainModule, StringRef libDir) 
 }
 #endif
 
+//argc为参数个数包括程序本身文件 argv命令行参数的具体值 envp系统环境变量 NULL为结束标志位
 int main(int argc, char **argv, char **envp) {
   atexit(llvm_shutdown);  // Call llvm_shutdown() on exit.
 
@@ -1163,6 +1164,9 @@ int main(int argc, char **argv, char **envp) {
   parseArguments(argc, argv);
   sys::PrintStackTraceOnErrorSignal();
 
+  fprintf(stderr, "KLEE: Enter Master\n");
+
+  //可以直接忽略 watchdog 可能与限制程序执行时间有关
   if (Watchdog) {
     if (MaxTime==0) {
       klee_error("--watchdog used without --max-time");
@@ -1226,6 +1230,7 @@ int main(int argc, char **argv, char **envp) {
     }
   }
 
+  //设置中断函数和ctrl c有关
   sys::SetInterruptFunction(interrupt_handle);
 
   // Load the bytecode...
@@ -1282,6 +1287,7 @@ int main(int argc, char **argv, char **envp) {
       return r;
   }
 
+  //由kleehandler 获得运行时链接库 argv[0]为klee程序本身
   std::string LibraryDir = KleeHandler::getRunTimeLibraryPath(argv[0]);
   Interpreter::ModuleOptions Opts(LibraryDir.c_str(),
                                   /*Optimize=*/OptimizeModule,
@@ -1326,6 +1332,7 @@ int main(int argc, char **argv, char **envp) {
     klee_message("Linking in library: %s.\n", libFilename);
     mainModule = klee::linkWithLibrary(mainModule, libFilename);
   }
+
   // Get the desired main function.  klee_main initializes uClibc
   // locale and other data and then calls main.
   Function *mainFn = mainModule->getFunction(EntryPoint);
@@ -1338,6 +1345,8 @@ int main(int argc, char **argv, char **envp) {
   int pArgc;
   char **pArgv;
   char **pEnvp;
+
+  //由外部文件获取envp
   if (Environ != "") {
     std::vector<std::string> items;
     std::ifstream f(Environ.c_str());
@@ -1356,12 +1365,17 @@ int main(int argc, char **argv, char **envp) {
     for (; i != items.size(); ++i)
       pEnvp[i] = strdup(items[i].c_str());
     pEnvp[i] = 0;
-  } else {
+  }
+
+  //本机的envp
+  else {
     pEnvp = envp;
   }
 
+  //被测程序的argc argv
   pArgc = InputArgv.size() + 1;
   pArgv = new char *[pArgc];
+
   for (unsigned i=0; i<InputArgv.size()+1; i++) {
     std::string &arg = (i==0 ? InputFile : InputArgv[i-1]);
     unsigned size = arg.size() + 1;
@@ -1373,26 +1387,36 @@ int main(int argc, char **argv, char **envp) {
     pArgv[i] = pArg;
   }
 
+  //将ktest中的测试案例导入， replaying a test case ,
+  //replay library will replaces the call to klee_make_symbolic with a call to a function that
+  //assigns to our input the value stored in the .ktest file
   std::vector<bool> replayPath;
 
   if (ReplayPathFile != "") {
     KleeHandler::loadPathFile(ReplayPathFile, replayPath);
   }
 
+  //标记 不知道是干嘛的，
   Interpreter::InterpreterOptions IOpts;
   IOpts.MakeConcreteSymbolic = MakeConcreteSymbolic;
+
+  //handler主要是文件读写方面
   KleeHandler *handler = new KleeHandler(pArgc, pArgv);
   Interpreter *interpreter =
     theInterpreter = Interpreter::create(IOpts, handler);
   handler->setInterpreter(interpreter);
 
+  //输出运行的基本信息通过getInfoStream
   for (int i=0; i<argc; i++) {
     handler->getInfoStream() << argv[i] << (i+1<argc ? " ":"\n");
   }
   handler->getInfoStream() << "PID: " << getpid() << "\n";
 
+  //得到最终的module 经过一些预处理后的，具体见 executor 中的各种 prepare 函数
   const Module *finalModule =
     interpreter->setModule(mainModule, Opts);
+
+  //检测变量，占了很大的段落，并不知道是做什么的
   externalsAndGlobalsCheck(finalModule);
 
   if (ReplayPathFile != "") {
@@ -1406,6 +1430,7 @@ int main(int argc, char **argv, char **envp) {
   handler->getInfoStream() << buf;
   handler->getInfoStream().flush();
 
+  //和ktest有暂不需要关注， 根据 已有的 Ktest 进行 replay， 用于自动化的 replay
   if (!ReplayKTestDir.empty() || !ReplayKTestFile.empty()) {
     assert(SeedOutFile.empty());
     assert(SeedOutDir.empty());
@@ -1437,6 +1462,8 @@ int main(int argc, char **argv, char **envp) {
       }
     }
 
+    //得到 已生成的 Ktest 列表
+    //根据 生成的 Ktest 执行
     unsigned i=0;
     for (std::vector<KTest*>::iterator
            it = kTests.begin(), ie = kTests.end();
@@ -1455,7 +1482,10 @@ int main(int argc, char **argv, char **envp) {
       kTest_free(kTests.back());
       kTests.pop_back();
     }
-  } else {
+  }
+
+  //
+  else {
     std::vector<KTest *> seeds;
     for (std::vector<std::string>::iterator
            it = SeedOutFile.begin(), ie = SeedOutFile.end();
@@ -1467,6 +1497,8 @@ int main(int argc, char **argv, char **envp) {
       }
       seeds.push_back(out);
     }
+
+    // 为了确保每个 seeddir 都有 kTestFiles 采用了 和上文不一致的写法，
     for (std::vector<std::string>::iterator
            it = SeedOutDir.begin(), ie = SeedOutDir.end();
          it != ie; ++it) {
@@ -1488,6 +1520,7 @@ int main(int argc, char **argv, char **envp) {
       }
     }
 
+    // seeds 是 kTest 的集合
     if (!seeds.empty()) {
       llvm::errs() << "KLEE: using " << seeds.size() << " seeds\n";
       interpreter->useSeeds(&seeds);

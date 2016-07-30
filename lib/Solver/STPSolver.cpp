@@ -148,6 +148,7 @@ bool STPSolverImpl::computeTruth(const Query &query, bool &isValid) {
   std::vector<std::vector<unsigned char> > values;
   bool hasSolution;
 
+  //判断 query 有无解， hasSolution 为 true 代表 无解？？
   if (!computeInitialValues(query, objects, values, hasSolution))
     return false;
 
@@ -155,6 +156,7 @@ bool STPSolverImpl::computeTruth(const Query &query, bool &isValid) {
   return true;
 }
 
+// 根据 symbolic 计算得到具体值， 根据具体值得到 query 的 result
 bool STPSolverImpl::computeValue(const Query &query, ref<Expr> &result) {
   std::vector<const Array *> objects;
   std::vector<std::vector<unsigned char> > values;

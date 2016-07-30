@@ -28,6 +28,8 @@ namespace klee {
   
   class SpecialFunctionHandler {
   public:
+
+	//成员指针， 指向成员函数
     typedef void (SpecialFunctionHandler::*Handler)(ExecutionState &state,
                                                     KInstruction *target, 
                                                     std::vector<ref<Expr> > 
